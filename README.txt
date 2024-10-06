@@ -1,11 +1,11 @@
-# Code and data for: Decomposing dynamical subprocesses for compositional generalization
+This is the code and data supplement for: 
+Decomposing dynamical subprocesses for compositional generalization
 Lennart Luettgau, Tore Erdmann, Sebastijan Veselic, Kimberly L. Stachenfeld, Zeb Kurth-Nelson, Rani Moran, and Raymond J. Dolan
-Proceedings of the National Academy of Sciences
+Proceedings of the National Academy of Sciences (in press)
 
 Lennart Luettgau, 10/2024, lennart.luettgau@gmail.com
 
-This is the code supplement for the statistical models/GLMs implemented in
-R, simulations and fitting of successor feature models implemented in MATLAB
+Statistical models/GLMs implemented in R, simulations and fitting of successor feature models implemented in MATLAB
 
 Raw data are provided in /data/all_data.csv.zip (compressed file needs to be unpacked first)
 
