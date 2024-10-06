@@ -2,6 +2,7 @@
 Lennart Luettgau, Tore Erdmann, Sebastijan Veselic, Kimberly L. Stachenfeld, Zeb Kurth-Nelson, Rani Moran, and Raymond J. Dolan
 Proceedings of the National Academy of Sciences
 
+Lennart Luettgau, 10/2024, lennart.luettgau@gmail.com
 
 This is the code supplement for the statistical models/GLMs implemented in
 R, simulations and fitting of successor feature models implemented in MATLAB
