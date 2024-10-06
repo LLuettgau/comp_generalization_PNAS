@@ -1,0 +1,1387 @@
+---
+title: "markov_MLM"
+output: html_document
+---
+
+#start up
+```{r, SETTINGS-knitr, include=FALSE}
+stopifnot(require(knitr))
+options(width = 90)
+opts_chunk$set(
+  cache = TRUE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+#Load required packages
+```{r}
+library(plyr)
+library(rethinking)
+library(bayestestR)
+options(mc.cores = parallel::detectCores())
+library(readr)
+library(tidyr)
+library(Hmisc)
+library(RColorBrewer)
+library(reshape2)
+library(dplyr)
+
+library(ggplot2)
+library(posterior)
+```
+
+#Settings
+```{r}
+
+analysis_type = 1 # 1 = all aggregated data, 2 = first trial(s) during transfer only
+phase = 2 #prior learning or transfer phase analysis
+iterations = 4000 #how many total samples in MCMC
+warmup_samples = 1000 #how many warmup samples in MCMC
+rope = c(.45, .55) #lower and upper bound of region of practical equivalence
+show_trace = 0 #show trace and trankplots for model convergence assessment
+
+```
+
+#Load the data
+```{r}
+
+data_path = "C:/Users/lenna/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/markov_task/behavioral_analysis/review_code_data/data/" # set path here
+
+#load data from each phase separately
+if (analysis_type == 1) {
+    if (phase == 1) {
+      ds <- read.csv(paste(data_path,"joint_prior_aggregate_data_file_final10.csv", sep = ""))  
+    } else if (phase ==2) {
+      ds <- read.csv(paste(data_path,"joint_trans_aggregate_data_file_final10.csv", sep = ""))
+    }
+  } else if (analysis_type == 2) {
+    ds <- read.csv(paste(data_path,"joint_trans_aggregate_data_file_first_final10.csv", sep = ""))
+    #data for difference between prior and transfer learning phase
+    ds_first_trial_diff <- read.csv(paste(data_path,"joint_trans_aggregate_data_file_first_both_phases_final10.csv", sep = ""))
+    
+    ds_first_trial_diff[,'SubID']<-factor(ds_first_trial_diff[,'SubID'])
+}
+
+
+ds[,'SubID']<-factor(ds[,'SubID'])
+head(ds, 10)
+
+
+#prepare joint data set for prior and transfer learning
+all_ds1 <- read.csv(paste(data_path,"joint_prior_aggregate_data_file_final10.csv", sep = ""))
+all_ds1[,'phase'] <- c(rep(1, nrow(all_ds1)))
+
+all_ds2 <- read.csv(paste(data_path,"joint_trans_aggregate_data_file_final10.csv", sep = ""))
+all_ds2[,'phase'] <- c(rep(2, nrow(all_ds2)))
+
+all_ds <- rbind(all_ds1,all_ds2)
+
+all_ds[,'SubID']<-factor(all_ds[,'SubID'])
+#recode probe type
+all_ds$probe_type_rec <- recode(all_ds$probe_type, `-0.5` = 1, `0.5` = 2)
+
+#make variable coding for each probe type in each phase 
+for (i in 1:nrow(all_ds)) {
+  if (all_ds$total_trials[i] < 20 & all_ds$probe_type_rec[i] == 1) {
+      all_ds$tp_pt[i] = all_ds$phase[i] * all_ds$probe_type_rec[i] + 1
+  } else {
+    all_ds$tp_pt[i] = all_ds$phase[i] * all_ds$probe_type_rec[i] 
+}  
+}
+
+head(all_ds, 10)
+
+if (analysis_type == 2) {
+  ds_first_trial_diff$phase_rec <- recode(ds_first_trial_diff$phase, `1` = -0.5, `2` = 0.5)
+  ds_first_trial_diff$IA_tt_phase = ds_first_trial_diff$trial_type * ds_first_trial_diff$phase_rec
+
+  
+for (i in 1:nrow(ds_first_trial_diff)) {
+       #condition 1
+      if (ds_first_trial_diff$trial_type[i] == -0.5 & ds_first_trial_diff$phase[i] == 1 & ds_first_trial_diff$condition_non_rec[i] == 1) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = -.25
+          ds_first_trial_diff$IA_tt_phase_int[i] = 1
+
+      } else if (ds_first_trial_diff$trial_type[i] == 0.5  & ds_first_trial_diff$phase[i] == 1 & ds_first_trial_diff$condition_non_rec[i] == 1) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = .25
+          ds_first_trial_diff$IA_tt_phase_int[i] = 2
+          
+      } else if (ds_first_trial_diff$trial_type[i] == -0.5  & ds_first_trial_diff$phase[i] == 2 & ds_first_trial_diff$condition_non_rec[i] == 1) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = .25
+          ds_first_trial_diff$IA_tt_phase_int[i] = 3
+
+      } else if (ds_first_trial_diff$trial_type[i] == 0.5 & ds_first_trial_diff$phase[i] == 2 & ds_first_trial_diff$condition_non_rec[i] == 1) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = -.25  
+          ds_first_trial_diff$IA_tt_phase_int[i] = 4
+          
+          
+      #condition 2
+      } else if (ds_first_trial_diff$trial_type[i] == -0.5 & ds_first_trial_diff$phase[i] == 1 & ds_first_trial_diff$condition_non_rec[i] == 2) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = .25    
+          ds_first_trial_diff$IA_tt_phase_int[i] = 1
+
+      } else if (ds_first_trial_diff$trial_type[i] == 0.5  & ds_first_trial_diff$phase[i] == 1 & ds_first_trial_diff$condition_non_rec[i] == 2) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = -.25
+          ds_first_trial_diff$IA_tt_phase_int[i] = 2
+
+      } else if (ds_first_trial_diff$trial_type[i] == -0.5  & ds_first_trial_diff$phase[i] == 2 & ds_first_trial_diff$condition_non_rec[i] == 2) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = -.25  
+          ds_first_trial_diff$IA_tt_phase_int[i] = 3
+
+      } else if (ds_first_trial_diff$trial_type[i] == 0.5 & ds_first_trial_diff$phase[i] == 2 & ds_first_trial_diff$condition_non_rec[i] == 2) {
+          ds_first_trial_diff$IA_tt_phase_con[i] = .25  
+          ds_first_trial_diff$IA_tt_phase_int[i] = 4
+
+      }
+    }
+  
+  head(ds_first_trial_diff, 10)
+
+}
+
+if (analysis_type == 1) {
+  #unexpected transitions data - all trials
+  ds_unexpected_transitions <- read.csv(paste(data_path,"joint_aggregated_unexpected_transitions_final10.csv", sep = ""))
+  
+  #recode trial type
+  ds_unexpected_transitions$trial_type_non_rec <- recode(ds_unexpected_transitions$trial_type, `1` = -0.5, `2` = 0.5, `3` = 1)
+  ds_unexpected_transitions$expected_int <- recode(ds_unexpected_transitions$expected, `-0.5` = 1, `0.5` = 2)
+  
+   for (i in 1:nrow(ds_unexpected_transitions)) {
+        if (ds_unexpected_transitions$trial_type_non_rec[i] == -0.5 & ds_unexpected_transitions$expected_int[i] == 1) {
+            ds_unexpected_transitions$IA_tt_exp_int[i] = 1
+  
+        } else if (ds_unexpected_transitions$trial_type_non_rec[i] == 0.5  & ds_unexpected_transitions$expected_int[i] == 1) {
+            ds_unexpected_transitions$IA_tt_exp_int[i] = 2
+            
+        } else if (ds_unexpected_transitions$trial_type_non_rec[i] == -0.5  & ds_unexpected_transitions$expected_int[i] == 2) {
+            ds_unexpected_transitions$IA_tt_exp_int[i] = 3
+  
+        } else if (ds_unexpected_transitions$trial_type_non_rec[i] == 0.5 & ds_unexpected_transitions$expected_int[i] == 2) {
+            ds_unexpected_transitions$IA_tt_exp_int[i] = 4
+            
+        }
+   }
+  
+} else if (analysis_type == 2) {
+  #unexpected transitions data - only first occurences
+  ds_unexpected_transitions <- read.csv(paste(data_path,"joint_first_unexpected_transitions_final10.csv", sep = ""))
+  #recode trial type
+  ds_unexpected_transitions$trial_type_non_rec <- recode(ds_unexpected_transitions$trial_type, `1` = -0.5, `2` = 0.5, `3` = 1)
+}
+  
+
+ds_unexpected_transitions[,'SubID']<-factor(ds_unexpected_transitions[,'SubID'])
+
+#only use subset of subjects with no 3 transitions
+ds_unexpected_transitions_subset_idx <- ds_unexpected_transitions["trial_type"] != 3
+ds_unexpected_transitions_subset <-  ds_unexpected_transitions[ds_unexpected_transitions_subset_idx,] 
+
+
+head(ds_unexpected_transitions_subset, 10)
+
+```
+
+Generalized linear models
+
+#Prepare data for GLM
+```{r}
+# prior trimmed data list
+ds$IA_tt_cond = ds$trial_type * ds$condition
+ds$IA_tt_cond_pt = ds$trial_type * ds$condition * ds$probe_type 
+
+dat_list <- list(
+  correct = ds$correct,
+  total_trials = ds$total_trials,
+  subject = ds$sub_idx,
+  trial_type = ds$trial_type,
+  probe_type = ds$probe_type,
+  condition = ds$condition,
+  condition_int = ds$condition_non_rec,
+  trial_type_int = ds$trial_type_non_rec,
+  IA_tt_cond = ds$IA_tt_cond,
+  IA_tt_cond_pt = ds$IA_tt_cond_pt 
+  )
+
+
+#for all data across phases
+dat_list_all_data <- list(
+  correct = all_ds$correct,
+  total_trials = all_ds$total_trials,
+  subject = all_ds$sub_idx,
+  task_phase_probe_type = all_ds$tp_pt,
+  task_phase = all_ds$phase,
+  probe_type = all_ds$probe_type_rec
+  )
+
+
+if (analysis_type == 2) {
+  #for all data across phases
+  ds_first_trial_diff$IA_tt_cond_phase = ds_first_trial_diff$trial_type * ds_first_trial_diff$condition * ds_first_trial_diff$phase 
+    ds_first_trial_diff$IA_tt_cond = ds_first_trial_diff$trial_type * ds_first_trial_diff$condition
+    ds_first_trial_diff$IA_tt_phase = ds_first_trial_diff$trial_type * ds_first_trial_diff$phase_rec
+    ds_first_trial_diff$IA_cond_phase = ds_first_trial_diff$condition * ds_first_trial_diff$phase_rec
+
+  dat_list_all_data_first <- list(
+    correct = ds_first_trial_diff$correct,
+    total_trials = ds_first_trial_diff$total_trials,
+    subject = ds_first_trial_diff$sub_idx,
+    task_phase_trial_type = ds_first_trial_diff$tp_tt,
+    task_phase = ds_first_trial_diff$phase,
+    task_phase_rec = ds_first_trial_diff$phase_rec,
+    trial_type = ds_first_trial_diff$trial_type,
+    probe_type = ds_first_trial_diff$probe_type_rec,
+    IA_tt_cond_phase = ds_first_trial_diff$IA_tt_cond_phase, 
+    IA_tt_cond_phase_new = ds_first_trial_diff$IA_tt_cond_phase_new,
+    condition = ds_first_trial_diff$condition,
+    condition_int = ds_first_trial_diff$condition_non_rec,
+    IA_tt_phase_con_contrast = ds_first_trial_diff$IA_tt_phase_con,
+    IA_tt_phase_con_int = ds_first_trial_diff$IA_tt_phase_int,
+    IA_tt_cond_contrast = ds_first_trial_diff$IA_tt_cond,
+    IA_tt_phase_contrast = ds_first_trial_diff$IA_tt_phase,
+    IA_cond_phase_contrast = ds_first_trial_diff$IA_cond_phase
+    )
+  
+}
+
+
+if (analysis_type == 1) {
+
+  ds_unexpected_transitions_subset$IA_tt_cond = ds_unexpected_transitions_subset$trial_type_non_rec * ds_unexpected_transitions_subset$condition
+  ds_unexpected_transitions_subset$IA_tt_cond_unexp = ds_unexpected_transitions_subset$IA_tt_cond * ds_unexpected_transitions_subset$expected
+
+  dat_list_unexp <- list(
+    correct = ds_unexpected_transitions_subset$correct,
+    total_trials = ds_unexpected_transitions_subset$total_trials,
+    subject = ds_unexpected_transitions_subset$sub_idx,
+    trial_type = ds_unexpected_transitions_subset$trial_type_non_rec,
+    probe_type = ds_unexpected_transitions_subset$probe_type,
+    expected = ds_unexpected_transitions_subset$expected,
+    expected_int = ds_unexpected_transitions_subset$expected_int,
+    condition = ds_unexpected_transitions_subset$condition,
+    condition_int = ds_unexpected_transitions_subset$condition_non_rec,
+    trial_type_int = ds_unexpected_transitions_subset$trial_type,
+    IA_tt_cond = ds_unexpected_transitions_subset$IA_tt_cond,
+    IA_tt_cond_unexp = ds_unexpected_transitions_subset$IA_tt_cond_unexp,
+    IA_tt_unexp = ds_unexpected_transitions$IA_tt_exp_int
+  
+    )
+
+} else if (analysis_type == 2) {
+    ds_unexpected_transitions_subset$IA_tt_cond = ds_unexpected_transitions_subset$trial_type_non_rec * ds_unexpected_transitions_subset$condition
+    
+  dat_list_unexp <- list(
+    correct = ds_unexpected_transitions_subset$correct,
+    total_trials = ds_unexpected_transitions_subset$total_trials,
+    subject = ds_unexpected_transitions_subset$sub_idx,
+    trial_type = ds_unexpected_transitions_subset$trial_type_non_rec,
+    probe_type = ds_unexpected_transitions_subset$probe_type,
+    condition = ds_unexpected_transitions_subset$condition,
+    condition_int = ds_unexpected_transitions_subset$condition_non_rec,
+    trial_type_int = ds_unexpected_transitions_subset$trial_type,
+    IA_tt_cond = ds_unexpected_transitions_subset$IA_tt_cond
+    )
+}
+
+
+```
+
+
+#Fit overall performance GLMs (above chance level performance in probe trials)
+```{r}
+
+## single-level model ###
+#parameter for each probe type during each phase
+
+model_flat_overall <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- tp_pt[task_phase_probe_type],
+        tp_pt[task_phase_probe_type] ~ dnorm( 0 , 1 )
+  ) , data=dat_list_all_data , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+
+#parameter estimates
+precis( model_flat_overall , depth=2)
+if (show_trace == 1) {
+traceplot( model_flat_overall )
+trankplot( model_flat_overall )
+}
+
+## multilevel model ###
+#individual intercepts, parameters for each probe type during each phase, covariation between intercepts and parameters
+
+model_var_int_overall <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a[subject,task_phase_probe_type] + tp_pt[task_phase_probe_type],
+        # adaptive priors - non-centered
+        transpars> matrix[subject,4]:a <-
+                   compose_noncentered( sigma , L_Rho , z ),
+        matrix[4,subject]:z ~ normal( 0 , 1 ),
+        # fixed priors
+        tp_pt[task_phase_probe_type] ~ dnorm( 0 , 1 ),
+        vector[4]:sigma ~ dhalfnorm(  0 , 1 ),
+        cholesky_factor_corr[4]:L_Rho ~ lkj_corr_cholesky( 4 ),
+        #generated quantities 
+        # compute ordinary correlation matrixes from Cholesky factors
+        gq> matrix[4,4]:Rho <<- Chol_to_Corr(L_Rho)
+  ) , data=dat_list_all_data , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+
+#parameter estimates
+precis( model_var_int_overall , depth=2)
+
+if (show_trace == 1) {
+traceplot( model_var_int_overall, ask=FALSE)
+trankplot( model_var_int_overall, ask=FALSE )
+}
+
+#compare flat and MLM
+compare(model_flat_overall, model_var_int_overall, func = PSIS)
+compare(model_flat_overall, model_var_int_overall, func = WAIC)
+
+
+#extract posterior samples from model
+post_cp <- extract.samples( model_var_int_overall ) 
+
+#exp probes, prior learning
+M_tppt1 <- mean( inv_logit( post_cp$tp_pt[,1] ) ) #posterior mean on probability scale
+HDI_tppt1 <- HPDI( inv_logit( post_cp$tp_pt[,1]  ) ) #highest posterior density on probability scale
+M_tppt1
+HDI_tppt1
+
+#inf probes, prior learning
+M_tppt2 <- mean( inv_logit( post_cp$tp_pt[,2] ) ) #posterior mean on probability scale
+HDI_tppt2 <- HPDI( inv_logit( post_cp$tp_pt[,2]  ) ) #highest posterior density on probability scale
+M_tppt2
+HDI_tppt2
+
+#exp probes, transfer learning
+M_tppt3 <- mean( inv_logit( post_cp$tp_pt[,3] ) ) #posterior mean on probability scale
+HDI_tppt3 <- HPDI( inv_logit( post_cp$tp_pt[,3]  ) ) #highest posterior density on probability scale
+M_tppt3
+HDI_tppt3
+
+#inf probes, transfer learning
+M_tppt4 <- mean( inv_logit( post_cp$tp_pt[,4] ) ) #posterior mean on probability scale
+HDI_tppt4 <- HPDI( inv_logit( post_cp$tp_pt[,4]  ) ) #highest posterior density on probability scale
+M_tppt4
+HDI_tppt4
+
+
+#find the proportion of the HPDI that is inside the ROPE
+rope(inv_logit( post_cp$tp_pt[,1] ), range = rope)
+rope(inv_logit( post_cp$tp_pt[,2] ), range = rope)
+rope(inv_logit( post_cp$tp_pt[,3] ), range = rope)
+rope(inv_logit( post_cp$tp_pt[,4] ), range = rope)
+
+
+#contrasts of parameter estimates 
+diff_overall_exp <- inv_logit( post_cp$tp_pt[,1]) - inv_logit( post_cp$tp_pt[,3])
+diff_overall_inf <- inv_logit( post_cp$tp_pt[,2]) - inv_logit( post_cp$tp_pt[,4])
+precis( list( diff_overall_exp=diff_overall_exp, diff_overall_inf=diff_overall_inf) )
+
+#HPDIs of the difference
+HPDI( diff_overall_exp)
+HPDI( diff_overall_inf)
+
+
+labels <- c('Prior Learning: Experience Probe', 'Prior Learning: Inference Probe', 'Transfer Learning: Experience Probe', 'Transfer Learning: Inference Probe')
+
+# plot( precis( model_var_int_sanity_check , depth=2 , pars=c("tp_pt[1]","tp_pt[2]","tp_pt[3]","tp_pt[4]")) , labels=labs , xlab="Parameter estimate")
+
+
+colors <- c(rgb(153, 52, 4, maxColorValue = 255), 
+            rgb(254, 153, 41, maxColorValue = 255), 
+            rgb(217, 95, 14, maxColorValue = 255), 
+            rgb(220, 190, 110, maxColorValue = 255))
+
+
+# Plot the density of posterior samples for the parameters of interest
+posterior_samples <- as.matrix(post_cp$tp_pt[,1:4] )
+# convert the matrix of posterior samples to a data frame
+df_posterior <- data.frame(tp_pt_1 = inv_logit( posterior_samples[, 1]), 
+                           tp_pt_2 = inv_logit( posterior_samples[, 2]),
+                           tp_pt_3 = inv_logit( posterior_samples[, 3]),
+                           tp_pt_4 = inv_logit( posterior_samples[, 4]))
+
+# # Reshape data for ggplot2
+df_posterior_melt <- reshape2::melt(df_posterior)
+
+# Add a new column with the desired labels
+df_posterior_melt$labels <- rep(labels, each=nrow(df_posterior_melt)/4)
+
+labels <- c('Prior Learning: Experience Probe', 
+            'Prior Learning: Inference Probe', 
+            'Transfer Learning: Experience Probe', 
+            'Transfer Learning: Inference Probe')
+
+
+# Plot with manually assigned subpanel titles
+p <- ggplot(df_posterior_melt, aes(x=value, fill=variable)) +
+  geom_density(alpha=0.4, stat = "density") +
+  facet_wrap(~ variable, scales="free_y", nrow = 2, labeller = labeller(variable = setNames(labels, names(df_posterior_melt)[2:5]))) +
+  scale_fill_manual(values = colors) +
+  labs(x = "Parameter Estimates (inverse logit transformed)", y = "Posterior Density") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        plot.title = element_text(size = 18, face = "bold"),
+        strip.text = element_text(size = 14),
+        plot.caption = element_text(size = 10, hjust = 0)) +
+  guides(fill="none") +
+  scale_x_continuous(limits = c(0.5, 1), breaks = seq(0.5, 1, by = 0.1)) +
+  geom_vline(xintercept = 0.55, linetype = "dashed", color = "grey50") +
+  geom_vline(data = df_posterior_melt %>% group_by(variable) %>% summarise(mean_val = mean(value)), 
+             aes(xintercept = mean_val, linetype = "solid"), show.legend = FALSE)
+
+
+
+#rgb(153,52,4), rgb(254,153,41), rgb(217,95,14), rgb(220,190,110)
+#colors <- c("rgb(153,52,4)", "rgb(254,153,41)", "rgb(217,95,14)", "rgb(220,190,110)")
+#colors <- c("#d95f0e", "#d95f0e", "#d95f0e", "#993404")
+#colors <- c("#993404", "#fe9929", "#d95f0e", "#dcbc6e")
+
+
+# plot_dens <- plot(model_var_int_sanity_check@stanfit, pars=c("tp_pt[4]","tp_pt[3]","tp_pt[2]","tp_pt[1]"), show_density=T, fill_color = colors, alpha = 0.5,  xlab="Parameter estimate", reverse.y = TRUE)
+# # Add the y-axis labels
+# axis(side = 2, at = seq_along(labs), labels = labs, tick = FALSE, line = NA)
+# print(plot_dens)
+
+#ggsave("/Users/lennart/Desktop/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/plots/overall_densities.png", p, dpi = 600, width = 12, height = 8, units = "in")
+
+```
+Generalized linear models to test transfer learning effects
+
+
+#Multilevel models on transfer learning phase (all or first two trials)
+```{r}
+
+## single predictor models ##
+
+#varying intercepts model
+model_var_int <- ulam(
+  alist(
+        correct ~ dbinom(total_trials , p),
+        logit(p) <- a_bar + z[subject]*a_sigma,
+        a_bar ~ dnorm(0,1),
+        a_sigma ~ dhalfnorm(0,1),
+        z[subject] ~ dnorm(0,1),
+        #generated quantities
+        gq> vector[subject]:a <<- a_bar + z*a_sigma
+  ) , data=dat_list , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )  
+
+precis( model_var_int, depth = 3)
+
+if (show_trace == 1) {
+traceplot( model_var_int, ask=FALSE  )
+trankplot( model_var_int, ask=FALSE  )
+}
+
+
+#varying intercepts model, probe type
+model_var_int_pt <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a_bar[1] + a[subject,1] +
+                   (a_bar[2] + a[subject,2])*probe_type,
+        matrix[subject,2]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+        matrix[2,subject]: z ~ dnorm( 0 , 1 ),
+        vector[2]: a_bar[[1]] ~ dnorm(0,1),
+        vector[2]: a_bar[[2]] ~ dnorm(0,1),
+        vector[2]: sigma ~ dhalfnorm(0,1),
+        cholesky_factor_corr[2]: L_Rho ~ lkj_corr_cholesky( 2 )
+  ) , data=dat_list , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_var_int_pt, depth = 2)
+
+if (show_trace == 1) {
+traceplot( model_var_int_pt, ask=FALSE  )
+trankplot( model_var_int_pt, ask=FALSE  )
+}
+
+
+#varying intercepts model with trial type, condition, probe type and interaction of trial type x condition
+model_var_int_tt_pt_cond_ttcondIA <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a_bar[1] + a[subject,1] +
+                   (a_bar[2] + a[subject,2])*trial_type +
+                   (a_bar[3] + a[subject,3])*probe_type + 
+                    bc*condition + bIA_tt_cond*IA_tt_cond,
+        matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+        matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+        vector[3]: a_bar[[1]] ~ dnorm(0,1),
+        vector[3]: a_bar[[2]] ~ dnorm(0,1),
+        vector[3]: a_bar[[3]] ~ dnorm(0,1),
+        vector[3]: sigma ~ dhalfnorm(0,1),
+        bc ~ dnorm( 0 , 1 ),
+        bIA_tt_cond ~ dnorm( 0 , 1 ),
+        cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 )
+  ) , data=dat_list , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_var_int_tt_pt_cond_ttcondIA, depth = 2)
+
+if (show_trace == 1) {
+traceplot( model_var_int_tt_pt_cond_ttcondIA, ask=FALSE  )
+trankplot( model_var_int_tt_pt_cond_ttcondIA, ask=FALSE  )
+}
+
+#varying intercepts model with trial type, condition, probe type and interaction of trial type x condition and for trial type x condition x probe type IA
+
+model_var_int_full <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a_bar[1] + a[subject,1] +
+                   (a_bar[2] + a[subject,2])*trial_type +
+                   (a_bar[3] + a[subject,3])*probe_type + 
+                    bc*condition + bIA_tt_cond*IA_tt_cond + bIA_tt_cond_pt*IA_tt_cond_pt,
+        matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+        matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+        vector[3]: a_bar[[1]] ~ dnorm(0,1),
+        vector[3]: a_bar[[2]] ~ dnorm(0,1),
+        vector[3]: a_bar[[3]] ~ dnorm(0,1),
+        vector[3]: sigma ~ dhalfnorm(0,1),
+        bc ~ dnorm( 0 , 1 ),
+        bIA_tt_cond ~ dnorm( 0 , 1 ),
+        bIA_tt_cond_pt ~ dnorm( 0 , 1 ),
+        cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 )
+  ) , data=dat_list , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_var_int_full, depth = 2)
+
+if (show_trace == 1) {
+traceplot( model_var_int_full, ask=FALSE  )
+trankplot( model_var_int_full, ask=FALSE  )
+}
+
+#model comparison
+#PSIS
+compare(model_var_int, 
+        model_var_int_pt, 
+        model_var_int_tt_pt_cond_ttcondIA, 
+        model_var_int_full, func = PSIS)
+
+#WAIC
+compare(model_var_int, 
+        model_var_int_pt, 
+        model_var_int_tt_pt_cond_ttcondIA, 
+        model_var_int_full,func = WAIC)
+
+```
+
+
+#Post-hoc contrasts for IA effects
+```{r}
+
+## post-hoc contrasts for IA effects
+model_posthoc_overall <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- bIA_tt_cond[condition_int,trial_type_int],
+        transpars> matrix[condition_int,2]:bIA_tt_cond <-
+                   compose_noncentered( sigma_IA , L_Rho_IA , z_IA ),
+        matrix[2,condition_int]:z_IA ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_IA ~ lkj_corr_cholesky( 2 ),
+        vector[2]: sigma_IA ~ dhalfnorm(0,.1),
+        #generated quantities 
+        # compute ordinary correlation matrixes from Cholesky factors
+        gq> matrix[2,2]:Rho_IA <<- Chol_to_Corr(L_Rho_IA)
+  ) , data=dat_list , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_posthoc_overall , depth=3 )
+
+#extract posterior samples from model
+post_posthoc_overall <- extract.samples( model_posthoc_overall ) 
+diff_1_all <- post_posthoc_overall$bIA_tt_cond[,1,1] - post_posthoc_overall$bIA_tt_cond[,2,1] 
+diff_2_all <- post_posthoc_overall$bIA_tt_cond[,1,2] - post_posthoc_overall$bIA_tt_cond[,2,2] 
+precis( list( diff_1_all=diff_1_all, diff_2_all=diff_2_all) )
+
+
+# experience probes
+
+# prior trimmed data list
+ds_exp_idx <- ds["probe_type"] == -0.5
+ds_exp <-  ds[ds_exp_idx,] 
+
+dat_list_exp <- list(
+  correct = ds_exp$correct,
+  total_trials = ds_exp$total_trials,
+  condition_int = ds_exp$condition_non_rec,
+  trial_type_int = ds_exp$trial_type_non_rec
+  )
+
+model_posthoc_exp <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- bIA_tt_cond[condition_int,trial_type_int],
+        transpars> matrix[condition_int,2]:bIA_tt_cond <-
+                   compose_noncentered( sigma_IA , L_Rho_IA , z_IA ),
+        matrix[2,condition_int]:z_IA ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_IA ~ lkj_corr_cholesky( 2 ),
+        vector[2]: sigma_IA ~ dhalfnorm(0,.1),
+        #generated quantities 
+        # compute ordinary correlation matrixes from Cholesky factors
+        gq> matrix[2,2]:Rho_IA <<- Chol_to_Corr(L_Rho_IA)
+  ) , data=dat_list_exp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_posthoc_exp , depth=3 )
+
+#extract posterior samples from model
+post_posthoc_exp <- extract.samples( model_posthoc_exp ) 
+diff_1_exp <- post_posthoc_exp$bIA_tt_cond[,1,1] - post_posthoc_exp$bIA_tt_cond[,2,1] 
+diff_2_exp <- post_posthoc_exp$bIA_tt_cond[,1,2] - post_posthoc_exp$bIA_tt_cond[,2,2] 
+precis( list( diff_1_exp=diff_1_exp, diff_2_exp=diff_2_exp) )
+
+
+# inference probes
+
+# prior trimmed data list
+ds_inf_idx <- ds["probe_type"] == 0.5
+ds_inf <-  ds[ds_inf_idx,] 
+
+dat_list_inf <- list(
+  correct = ds_inf$correct,
+  total_trials = ds_inf$total_trials,
+  condition_int = ds_inf$condition_non_rec,
+  trial_type_int = ds_inf$trial_type_non_rec
+  )
+
+model_posthoc_inf <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- bIA_tt_cond[condition_int,trial_type_int],
+        transpars> matrix[condition_int,2]:bIA_tt_cond <-
+                   compose_noncentered( sigma_IA , L_Rho_IA , z_IA ),
+        matrix[2,condition_int]:z_IA ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_IA ~ lkj_corr_cholesky( 2 ),
+        vector[2]: sigma_IA ~ dhalfnorm(0,.1),
+        #generated quantities 
+        # compute ordinary correlation matrixes from Cholesky factors
+        gq> matrix[2,2]:Rho_IA <<- Chol_to_Corr(L_Rho_IA)
+  ) , data=dat_list_inf , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_posthoc_inf , depth=3 )
+
+#extract posterior samples from model
+post_posthoc_inf <- extract.samples( model_posthoc_inf ) 
+diff_1_inf <- post_posthoc_inf$bIA_tt_cond[,1,1] - post_posthoc_inf$bIA_tt_cond[,2,1] 
+diff_2_inf <- post_posthoc_inf$bIA_tt_cond[,1,2] - post_posthoc_inf$bIA_tt_cond[,2,2] 
+precis( list( diff_1_inf=diff_1_inf, diff_2_inf=diff_2_inf) )
+```
+
+
+
+#Plot parameter estimates from best-fiting GLM
+```{r}
+
+#extract posterior samples from model
+post_cp_trans <- extract.samples( model_var_int_tt_pt_cond_ttcondIA ) 
+
+#main effect of trial type
+M_tt <- mean( post_cp_trans$a_bar[,2] )  #posterior mean
+HDI_tt <- HPDI( post_cp_trans$a_bar[,2]  ) #highest posterior density 
+M_tt
+HDI_tt
+
+#main effect of probe type
+M_pt <- mean( post_cp_trans$a_bar[,3] ) #posterior mean on probability scale
+HDI_pt <- HPDI( post_cp_trans$a_bar[,3] ) #highest posterior density on probability scale
+M_pt
+HDI_pt
+
+#main effect of condition
+M_con <- mean( post_cp_trans$bc ) #posterior mean on probability scale
+HDI_con <- HPDI( post_cp_trans$bc ) #highest posterior density on probability scale
+M_con
+HDI_con
+
+#interaction effect of trial type x condition
+M_IA <- mean( post_cp_trans$bIA_tt_cond ) #posterior mean on probability scale
+HDI_IA <- HPDI( post_cp_trans$bIA_tt_cond ) #highest posterior density on probability scale
+M_IA 
+HDI_IA 
+
+
+
+colors_trans <- c(rgb(251,180,185, maxColorValue = 255), 
+            rgb(247,104,161, maxColorValue = 255), 
+            rgb(197,27,138, maxColorValue = 255), 
+            rgb(122,1,119, maxColorValue = 255))
+
+labels_trans <- c("Trial Type", 
+                  "Probe Type", 
+                  "Condition", 
+                  "Trial Type x Condition")
+
+
+
+# Plot the density of posterior samples for the parameters of interest
+posterior_samples_trans1 <- as.matrix(post_cp_trans$a_bar[,2:3])
+posterior_samples_trans2 <- as.matrix(post_cp_trans$bc)
+posterior_samples_trans3 <- as.matrix(post_cp_trans$bIA_tt_cond)
+        
+posterior_samples_trans <- cbind(posterior_samples_trans1, 
+                             posterior_samples_trans2, 
+                             posterior_samples_trans3)                              
+       
+# convert the matrix of posterior samples to a data frame
+df_posterior_trans <- data.frame(trial_type = posterior_samples_trans[, 1], 
+                           probe_type = posterior_samples_trans[, 2],
+                           condition = posterior_samples_trans[, 3],
+                           trial_type_condition_IA = posterior_samples_trans[, 4])
+
+# # Reshape data for ggplot2
+df_posterior_trans_melt <- reshape2::melt(df_posterior_trans)
+# Add a new column with the desired labels
+df_posterior_trans_melt$labels <- rep(labels_trans, each=nrow(df_posterior_trans_melt)/4)
+
+
+if (analysis_type == 2) {
+  # Plot with manually assigned subpanel titles
+  p_trans <- ggplot(df_posterior_trans_melt, aes(x=value, fill=variable)) +
+    geom_density(alpha=0.4, stat = "density") +
+    facet_wrap(~ variable, scales="free_y", nrow = 2, 
+               labeller = labeller(variable = setNames(labels_trans, unique(df_posterior_trans_melt[,1])))) +
+    scale_fill_manual(values = colors_trans) +
+    labs(x = "Parameter Estimates", y = "Posterior Density") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "bottom",
+          axis.text = element_text(size = 28),
+          axis.title = element_text(size = 28),
+          plot.title = element_text(size = 28, face = "bold"),
+          strip.text = element_text(size = 32),
+          plot.caption = element_text(size = 18, hjust = 0)) +
+    guides(fill="none") +
+    scale_x_continuous(limits = c(-1.5, 1.5), breaks = seq(-1.5, 1.5, by = 0.5)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_vline(data = df_posterior_trans_melt %>% group_by(variable) %>% summarise(mean_val = mean(value)), 
+               aes(xintercept = mean_val, linetype = "solid"), show.legend = FALSE)
+  show(p_trans)
+
+
+
+  ggsave("/Users/lennart/Desktop/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/plots/transfer_model_densities_first_trial.png", p_trans, dpi = 600, width = 14, height = 10, units = "in")
+  
+} else {
+  
+    # Plot with manually assigned subpanel titles
+  p_trans <- ggplot(df_posterior_trans_melt, aes(x=value, fill=variable)) +
+    geom_density(alpha=0.4, stat = "density") +
+    facet_wrap(~ variable, scales="free_y", nrow = 1, 
+               labeller = labeller(variable = setNames(labels_trans, unique(df_posterior_trans_melt[,1])))) +
+    scale_fill_manual(values = colors_trans) +
+    labs(x = "Parameter Estimates", y = "Posterior Density") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "bottom",
+          axis.text = element_text(size = 18),
+          axis.title = element_text(size = 20),
+          plot.title = element_text(size = 20, face = "bold"),
+          strip.text = element_text(size = 20),
+          plot.caption = element_text(size = 10, hjust = 0)) +
+    guides(fill="none") +
+    scale_x_continuous(limits = c(-1.5, 1.5), breaks = seq(-1.5, 1.5, by = 0.5)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_vline(data = df_posterior_trans_melt %>% group_by(variable) %>% summarise(mean_val = mean(value)), 
+               aes(xintercept = mean_val, linetype = "solid"), show.legend = FALSE)
+  show(p_trans)
+
+    ggsave("/Users/lennart/Desktop/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/plots/transfer_model_densities.png", p_trans, dpi = 600, width = 16, height = 4, units = "in")
+  
+}
+
+
+
+```
+
+
+
+
+
+### Supplementary analyses ###
+
+
+
+
+#Fit first trial difference across task phases GLM
+```{r}
+if (analysis_type == 2) {
+
+#varying intercepts model, only condition, trial type and task phase - with 2-way interactions
+model_var_noIA <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a_bar[1] + a[subject,1] +
+                   (a_bar[2] + a[subject,2])*trial_type +
+                   (a_bar[3] + a[subject,3])*task_phase_rec +
+                   bc*condition +
+                   bIA_tt_cond*IA_tt_cond_contrast +
+                   bIA_tt_phase*IA_tt_phase_contrast +
+                   bIA_cond_phase*IA_cond_phase_contrast,
+        matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+        matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+        vector[3]: a_bar[[1]] ~ dnorm(0,1),
+        vector[3]: a_bar[[2]] ~ dnorm(0,1),
+        vector[3]: a_bar[[3]] ~ dnorm(0,1),
+        vector[3]: sigma ~ dhalfnorm(0,1),
+        bc ~ dnorm( 0 , 1 ),
+        bIA_tt_cond ~ dnorm( 0 , 1 ),
+        bIA_tt_phase ~ dnorm( 0 , 1 ),
+        bIA_cond_phase ~ dnorm( 0 , 1 ),
+        cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 )
+  ) , data=dat_list_all_data_first , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+precis( model_var_noIA, depth = 2)
+
+if (show_trace == 1) {
+traceplot( model_var_noIA, ask=FALSE  )
+trankplot( model_var_noIA, ask=FALSE  )
+}
+  
+  
+#IA contrast model - with 2-way interactions
+model_var_phase_contrast <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a_bar[1] + a[subject,1] +
+                   (a_bar[2] + a[subject,2])*trial_type +
+                   (a_bar[3] + a[subject,3])*task_phase_rec +
+                   bc*condition + 
+                   bIA_tt_cond*IA_tt_cond_contrast +
+                   bIA_tt_phase*IA_tt_phase_contrast +
+                   bIA_cond_phase*IA_cond_phase_contrast +
+                   bIA_tt_cond_phase*IA_tt_phase_con_contrast,
+        matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+        matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+        vector[3]: a_bar[[1]] ~ dnorm(0,1),
+        vector[3]: a_bar[[2]] ~ dnorm(0,1),
+        vector[3]: a_bar[[3]] ~ dnorm(0,1),
+        vector[3]: sigma ~ dhalfnorm(0,1),
+        bc ~ dnorm( 0 , 1 ),
+        bIA_tt_cond ~ dnorm( 0 , 1 ),
+        bIA_tt_phase ~ dnorm( 0 , 1 ),
+        bIA_cond_phase ~ dnorm( 0 , 1 ),
+        bIA_tt_cond_phase ~ dnorm( 0 , 1 ),
+        cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 )
+  ) , data=dat_list_all_data_first , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+
+#parameter estimates
+precis( model_var_phase_contrast , depth=2)
+
+if (show_trace == 1) {
+traceplot( model_var_phase_contrast )
+trankplot( model_var_phase_contrast )
+}
+
+
+#IA condition difference model (for post hoc tests)
+model_var_phase_diff <- ulam(
+  alist(
+        correct ~ dbinom( total_trials , p ) ,
+        logit(p) <- a_bar[1] + a[subject,1] +
+                   (a_bar[2] + a[subject,2])*trial_type +
+                   (a_bar[3] + a[subject,3])*task_phase_rec +
+                   bc*condition + bIA_tt_cond_phase[condition_int,IA_tt_phase_con_int],
+        matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+        matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+        vector[3]: a_bar[[1]] ~ dnorm(0,1),
+        vector[3]: a_bar[[2]] ~ dnorm(0,1),
+        vector[3]: a_bar[[3]] ~ dnorm(0,1),
+        vector[3]: sigma ~ dhalfnorm(0,1),
+        # adaptive priors - non-centered
+        transpars> matrix[condition_int,4]:bIA_tt_cond_phase <-
+                   compose_noncentered( sigma_IA , L_Rho_IA , z_IA ),
+        matrix[4,condition_int]:z_IA ~ normal( 0 , 1 ),
+        vector[4]:sigma_IA ~ dhalfnorm(  0 , 1 ),
+        cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 ),
+        cholesky_factor_corr[4]:L_Rho_IA ~ lkj_corr_cholesky( 2 ),
+        bc ~ dnorm( 0 , 1 ),
+        #generated quantities
+        # compute ordinary correlation matrixes from Cholesky factors
+        gq> matrix[4,4]:Rho_IA <<- Chol_to_Corr(L_Rho_IA)
+  ) , data=dat_list_all_data_first , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+#parameter estimates
+precis( model_var_phase_diff , pars=c("a_bar","bc","bIA_tt_cond_phase"), depth=3)
+
+if (show_trace == 1) {
+traceplot( model_var_phase_diff,ask=FALSE  )
+trankplot( model_var_phase_diff,ask=FALSE  )
+}
+
+
+#compare models (assess equivalence of contrast and difference model)
+compare(model_var_noIA, model_var_phase_contrast, model_var_phase_diff, func = PSIS)
+compare(model_var_noIA, model_var_phase_contrast, model_var_phase_diff, func = WAIC)
+
+#extract posterior samples from model and compute contrasts
+post_posthoc_phase_diff <- extract.samples( model_var_phase_diff ) 
+diff_cond1_1 <- post_posthoc_phase_diff$bIA_tt_cond_phase[,1,3] - post_posthoc_phase_diff$bIA_tt_cond_phase[,1,1] 
+diff_cond1_2 <- post_posthoc_phase_diff$bIA_tt_cond_phase[,1,4] - post_posthoc_phase_diff$bIA_tt_cond_phase[,1,2] 
+
+diff_cond2_1 <- post_posthoc_phase_diff$bIA_tt_cond_phase[,2,3] - post_posthoc_phase_diff$bIA_tt_cond_phase[,2,1]
+diff_cond2_2 <- post_posthoc_phase_diff$bIA_tt_cond_phase[,2,4] - post_posthoc_phase_diff$bIA_tt_cond_phase[,2,2] 
+
+precis( list( diff_cond1_1=diff_cond1_1, diff_cond1_2=diff_cond1_2, diff_cond2_1=diff_cond2_1, diff_cond2_2=diff_cond2_2) )
+
+
+#condition differences
+cond_diff_1 <- diff_cond1_1 - diff_cond2_1
+cond_diff_2 <- diff_cond1_2 - diff_cond2_2
+
+precis( list( cond_diff_1=cond_diff_1, cond_diff_2=cond_diff_2) )
+precis( cond_diff_1 - cond_diff_2)
+
+
+#within condition differences
+precis( diff_cond1_1 - diff_cond1_2)
+precis( diff_cond2_1 - diff_cond2_2)
+
+# plot interaction effects
+
+labels <- c('4-cycle prior: 4-state graph difference', '4-cycle prior: 6-state graph difference',  '6-cycle prior: 4-state graph difference', '6-cycle prior: 6-state graph difference', 'Condition difference: 4-state graph difference', 'Condition difference: 6-state graph difference')
+
+
+colors <- c(rgb(0, 186, 85, maxColorValue = 255),
+            "black", 
+            rgb(0, 186, 85, maxColorValue = 255),
+            "black", 
+            rgb(80, 120, 90, maxColorValue = 255),
+            "grey50") 
+
+
+# Plot the density of posterior samples for the parameters of interest
+# convert posterior samples to a data frame
+df_posterior_diff <- data.frame(diff_cond1_1 = diff_cond1_1, 
+                           diff_cond1_2 = diff_cond1_2,
+                           diff_cond2_1 = diff_cond2_1,
+                           diff_cond2_2 = diff_cond2_2, 
+                           cond_diff_1 = cond_diff_1, 
+                           cond_diff_2 = cond_diff_2)
+
+# # Reshape data for ggplot2
+df_posterior_diff_melt <- reshape2::melt(df_posterior_diff)
+
+# Add a new column with the desired labels
+df_posterior_diff_melt$labels <- rep(labels, each=nrow(df_posterior_diff_melt)/6)
+
+
+p <- ggplot(df_posterior_diff_melt, aes(x=value, fill=variable)) +
+  geom_density(alpha=0.4, stat = "density") +
+  facet_wrap(~ variable, scales="free_y", nrow = 3, labeller = labeller(variable = setNames(labels, unique(df_posterior_diff_melt$variable)))) +
+  scale_fill_manual(values = colors) +
+  labs(x = "Parameter Estimates", y = "Posterior Density") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        axis.text = element_text(size = 22),
+        axis.title = element_text(size = 24),
+        plot.title = element_text(size = 24, face = "bold"),
+        strip.text = element_text(size = 21),
+        plot.caption = element_text(size = 20, hjust = 0)) +
+  guides(fill="none") +
+  scale_x_continuous(limits = c(-2, 2), breaks = seq(-2, 2, by = 0.5)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_vline(data = df_posterior_diff_melt %>% group_by(variable) %>% summarise(mean_val = mean(value)), 
+             aes(xintercept = mean_val, linetype = "solid"), show.legend = FALSE)
+
+show(p)
+
+
+
+ggsave("/Users/lennart/Desktop/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/plots/phase_diff_IA_densities.png", p, dpi = 600, width = 14, height = 10, units = "in")
+
+}
+```
+
+
+
+
+
+#Fit GLM only for unexpected transitions in transfer learning (only in first occurence data)
+```{r}
+if (analysis_type == 2) {
+
+    #check data
+
+    cond1_4_idx <- dat_list_unexp$condition == -1 & dat_list_unexp$trial_type_int == 1
+    cond1_6_idx <- dat_list_unexp$condition == -1 & dat_list_unexp$trial_type_int == 2
+    cond2_4_idx <- dat_list_unexp$condition == 1 & dat_list_unexp$trial_type_int == 1
+    cond2_6_idx <- dat_list_unexp$condition == 1 & dat_list_unexp$trial_type_int == 2
+
+      sum(dat_list_unexp$correct[cond1_4_idx]) / sum(cond1_4_idx)
+      sum(dat_list_unexp$correct[cond2_4_idx]) / sum(cond2_4_idx)
+      sum(dat_list_unexp$correct[cond1_6_idx]) / sum(cond1_6_idx)
+      sum(dat_list_unexp$correct[cond2_6_idx]) / sum(cond2_6_idx)
+
+  #models not considering difference between expected and unexpected transitions within conditions
+  #compare multilevel model with only condition and trial type effect vs full interaction model(s)
+  
+  #model only featuring trial x condition interaction (for post-hoc contrasts)
+  model_var_only_unexp_onlyIA <- ulam(
+    alist(
+          correct ~ dbinom( total_trials , p ) ,
+          logit(p) <- IA_tt_cond[condition_int,trial_type_int],
+          transpars> matrix[condition_int,2]:IA_tt_cond <-
+                     compose_noncentered( sigma_IA , L_Rho_IA , z_IA ),
+          matrix[2,condition_int]: z_IA ~ normal( 0 , 1 ),
+          vector[2]: sigma_IA ~ dhalfnorm(  0 , .5 ),
+          #generated quantities
+          cholesky_factor_corr[2]: L_Rho_IA ~ lkj_corr_cholesky( 2 ),
+          gq> matrix[2,2]: Rho_IA <<- Chol_to_Corr(L_Rho_IA)
+    ) , data=dat_list_unexp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+
+  
+  precis( model_var_only_unexp_onlyIA , pars=c("IA_tt_cond"), depth=3)
+    if (show_trace == 1) {
+  traceplot( model_var_only_unexp_onlyIA, ask=FALSE  )
+  trankplot( model_var_only_unexp_onlyIA, ask=FALSE  )
+  }
+  
+  
+  #varying intercepts model, only condition and trial type effects
+  model_var_only_unexp_noIA <- ulam(
+    alist(
+          correct ~ dbinom( total_trials , p ) ,
+          logit(p) <- a_bar[1] + a[subject,1] +
+                     (a_bar[2] + a[subject,2])*trial_type +
+                     bc*condition,
+          matrix[subject,2]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+          matrix[2,subject]: z ~ dnorm( 0 , 1 ),
+          vector[2]: a_bar[[1]] ~ dnorm(0,1),
+          vector[2]: a_bar[[2]] ~ dnorm(0,1),
+          vector[2]: sigma ~ dhalfnorm(0,1),
+          bc ~ dnorm( 0 , 1 ),
+          cholesky_factor_corr[2]: L_Rho ~ lkj_corr_cholesky( 2 )
+    ) , data=dat_list_unexp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+  
+  precis( model_var_only_unexp_noIA, depth=2)
+  
+  if (show_trace == 1) {
+  traceplot( model_var_only_unexp_noIA, ask=FALSE  )
+  trankplot( model_var_only_unexp_noIA, ask=FALSE  )
+  }
+  
+  
+  
+  #varying intercepts model, condition, trial type and trial x condition interaction (IA contrast model)
+  model_var_only_unexp_IA_contrast <- ulam(
+    alist(
+          correct ~ dbinom( total_trials , p ) ,
+          logit(p) <- a_bar[1] + a[subject,1] +
+                     (a_bar[2] + a[subject,2])*trial_type +
+                     bc*condition + bIA_tt_cond*IA_tt_cond,
+          matrix[subject,2]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+          matrix[2,subject]: z ~ dnorm( 0 , 1 ),
+          vector[2]: a_bar[[1]] ~ dnorm(0,1),
+          vector[2]: a_bar[[2]] ~ dnorm(0,1),
+          vector[2]: sigma ~ dhalfnorm(0,1),
+          bc ~ dnorm( 0 , 1 ),
+          bIA_tt_cond ~ dnorm( 0 , 1 ),
+          cholesky_factor_corr[2]: L_Rho ~ lkj_corr_cholesky( 2 )
+    ) , data=dat_list_unexp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+  
+  precis( model_var_only_unexp_IA_contrast , pars=c("a_bar","bc","bIA_tt_cond"), depth=3)
+  
+  if (show_trace == 1) {
+  traceplot( model_var_only_unexp_IA_contrast, ask=FALSE  )
+  trankplot( model_var_only_unexp_IA_contrast, ask=FALSE  )
+  }
+  
+
+  #compare models
+  compare(model_var_only_unexp_noIA, model_var_only_unexp_IA_contrast, model_var_only_unexp_onlyIA, func = PSIS)
+  compare(model_var_only_unexp_noIA, model_var_only_unexp_IA_contrast, model_var_only_unexp_onlyIA, func = WAIC)
+  
+  
+  #extract posterior samples from model and compute contrasts
+  post_posthoc_only_unexp <- extract.samples( model_var_only_unexp_onlyIA )
+  
+  #within condition differences
+  diff_only_unexp_cond1 <- post_posthoc_only_unexp$IA_tt_cond[,1,1] - post_posthoc_only_unexp$IA_tt_cond[,1,2]
+  diff_only_unexp_cond2 <- post_posthoc_only_unexp$IA_tt_cond[,2,1] - post_posthoc_only_unexp$IA_tt_cond[,2,2]
+  
+  precis( list( diff_only_unexp_cond1=diff_only_unexp_cond1, 
+                diff_only_unexp_cond2=diff_only_unexp_cond2) )
+  
+  
+  #condition differences 
+  only_unexp_cond_diff_tt1 <- post_posthoc_only_unexp$IA_tt_cond[,1,1] - post_posthoc_only_unexp$IA_tt_cond[,2,1]
+  only_unexp_cond_diff_tt2 <- post_posthoc_only_unexp$IA_tt_cond[,1,2] - post_posthoc_only_unexp$IA_tt_cond[,2,2]
+  
+  
+  precis( list( only_unexp_cond_diff_tt1=only_unexp_cond_diff_tt1, 
+                only_unexp_cond_diff_tt2=only_unexp_cond_diff_tt2,
+                only_unexp_cond_diff_diff=only_unexp_cond_diff_tt1 - only_unexp_cond_diff_tt2))
+
+
+  
+  # plot interaction effects
+
+  labels <- c('Condition difference: 4-1 state transition', 'Condition difference: 6-1 state transition', 'Difference' )
+
+  colors <- c(rgb(0, 186, 85, maxColorValue = 255),
+              "black",
+              rgb(80, 120, 90, maxColorValue = 255))
+
+  # Plot the density of posterior samples for the parameters of interest
+  # convert posterior samples to a data frame
+  df_posterior_unexp <- data.frame(only_unexp_cond_diff_tt1 = only_unexp_cond_diff_tt1,
+                                   only_unexp_cond_diff_tt2 = only_unexp_cond_diff_tt2,
+                                   only_unexp_cond_diff_diff=only_unexp_cond_diff_tt1 - only_unexp_cond_diff_tt2)
+
+  # # Reshape data for ggplot2
+  df_posterior_unexp_melt <- reshape2::melt(df_posterior_unexp)
+
+  # Add a new column with the desired labels
+  df_posterior_unexp_melt$labels <- rep(labels, each=nrow(df_posterior_unexp_melt)/3)
+
+
+  p_unexp <- ggplot(df_posterior_unexp_melt, aes(x=value, fill=variable)) +
+    geom_density(alpha=0.4, stat = "density") +
+    facet_wrap(~ variable, scales="free_y", nrow = 3, labeller = labeller(variable = setNames(labels, unique(df_posterior_unexp_melt$variable)))) +
+    scale_fill_manual(values = colors) +
+    labs(x = "Parameter Estimates", y = "Posterior Density") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "bottom",
+          axis.text = element_text(size = 22),
+          axis.title = element_text(size = 24),
+          plot.title = element_text(size = 24, face = "bold"),
+          strip.text = element_text(size = 21),
+          plot.caption = element_text(size = 20, hjust = 0)) +
+    guides(fill="none") +
+    scale_x_continuous(limits = c(-2, 2), breaks = seq(-2, 2, by = 0.5)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_vline(data = df_posterior_unexp_melt %>% group_by(variable) %>% summarise(mean_val = mean(value)),
+               aes(xintercept = mean_val, linetype = "solid"), show.legend = FALSE)
+
+  show(p_unexp)
+
+
+
+  ggsave("/Users/lennart/Desktop/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/plots/unexpected_transitions_diff_first_occurence_densities.png", p_unexp, dpi = 600, width = 7, height = 12, units = "in")
+}
+
+```
+
+
+#Fit GLM comparing unexpected and expected transitions in transfer learning (only possible in aggregate data)
+```{r}
+if (analysis_type == 1) {
+  #compare multilevel model with only condition and trial type effect vs full interaction model(s)
+  
+  #varying intercepts model, only condition, trial type and expectation effects
+  model_var_unexp_noIA <- ulam(
+    alist(
+          correct ~ dbinom( total_trials , p ) ,
+          logit(p) <- a_bar[1] + a[subject,1] +
+                     (a_bar[2] + a[subject,2])*trial_type +
+                     (a_bar[3] + a[subject,3])*expected +
+                     bc*condition,
+          matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+          matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+          vector[3]: a_bar[[1]] ~ dnorm(0,1),
+          vector[3]: a_bar[[2]] ~ dnorm(0,1),
+          vector[3]: a_bar[[3]] ~ dnorm(0,1),
+          vector[3]: sigma ~ dhalfnorm(0,1),
+          bc ~ dnorm( 0 , 1 ),
+          cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 )
+    ) , data=dat_list_unexp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+  
+  precis( model_var_unexp_noIA, depth=2)
+  
+  if (show_trace == 1) {
+  traceplot( model_var_unexp_noIA, ask=FALSE  )
+  trankplot( model_var_unexp_noIA, ask=FALSE  )
+  }
+  
+  #varying intercepts model, condition, trial type, expectation, and trial x condition interaction (IA contrast model), no three-way interaction
+  model_var_unexp_IA_contrast_no_exp <- ulam(
+    alist(
+          correct ~ dbinom( total_trials , p ) ,
+          logit(p) <- a_bar[1] + a[subject,1] +
+                     (a_bar[2] + a[subject,2])*trial_type +
+                     (a_bar[3] + a[subject,3])*expected +
+                     bc*condition + bIA_tt_cond*IA_tt_cond,
+          matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+          matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+          vector[3]: a_bar[[1]] ~ dnorm(0,1),
+          vector[3]: a_bar[[2]] ~ dnorm(0,1),
+          vector[3]: a_bar[[3]] ~ dnorm(0,1),
+          vector[3]: sigma ~ dhalfnorm(0,1),
+          bc ~ dnorm( 0 , 1 ),
+          bIA_tt_cond ~ dnorm( 0 , 1 ),
+          cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 )
+    ) , data=dat_list_unexp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+  
+  precis( model_var_unexp_IA_contrast_no_exp , pars=c("a_bar","bc","bIA_tt_cond"), depth=3)
+  
+  if (show_trace == 1) {
+  traceplot( model_var_unexp_IA_contrast_no_exp, ask=FALSE  )
+  trankplot( model_var_unexp_IA_contrast_no_exp, ask=FALSE  )
+  }
+  
+  
+  
+  
+  
+  #varying intercepts model, condition, trial type, expectation x trial type interaction, specific condition interaction (for post-hoc contrasts)
+  model_var_unexp_IA <- ulam(
+    alist(
+          correct ~ dbinom( total_trials , p ) ,
+          logit(p) <- a_bar[1] + a[subject,1] +
+                     (a_bar[2] + a[subject,2])*trial_type +
+                     (a_bar[3] + a[subject,3])*expected +
+                     bc*condition + IA_tt_cond_unexp[condition_int,IA_tt_unexp],
+          matrix[subject,3]: a <- t(diag_pre_multiply( sigma , L_Rho ) * z),
+          transpars> matrix[condition_int,4]:IA_tt_cond_unexp <-
+                     compose_noncentered( sigma_IA , L_Rho_IA , z_IA ),
+          matrix[3,subject]: z ~ dnorm( 0 , 1 ),
+          matrix[4,condition_int]: z_IA ~ normal( 0 , 1 ),
+          vector[3]: a_bar[[1]] ~ dnorm(0,1),
+          vector[3]: a_bar[[2]] ~ dnorm(0,1),
+          vector[3]: a_bar[[3]] ~ dnorm(0,1),
+          vector[3]: sigma ~ dhalfnorm(0,1),
+          vector[4]: sigma_IA ~ dhalfnorm(  0 , .15 ),
+          bc ~ dnorm( 0 , 1 ),
+          cholesky_factor_corr[3]: L_Rho ~ lkj_corr_cholesky( 2 ),
+          cholesky_factor_corr[4]: L_Rho_IA ~ lkj_corr_cholesky( 2 ),
+          gq> matrix[4,4]: Rho_IA <<- Chol_to_Corr(L_Rho_IA)
+    ) , data=dat_list_unexp , chains=4 , iter = iterations, warmup=warmup_samples, cores = 4, log_lik=TRUE )
+  
+  precis( model_var_unexp_IA , pars=c("a_bar","bc","IA_tt_cond_unexp"), depth=3)
+  
+  if (show_trace == 1) {
+  traceplot( model_var_unexp_IA, ask=FALSE  )
+  trankplot( model_var_unexp_IA, ask=FALSE  )
+  }
+  
+  
+  #compare models
+  compare(model_var_unexp_noIA, model_var_unexp_IA_contrast_no_exp, model_var_unexp_IA, func = PSIS)
+  compare(model_var_unexp_noIA, model_var_unexp_IA_contrast_no_exp, model_var_unexp_IA, func = WAIC)
+  
+  
+  #extract posterior samples from model and compute contrasts
+  post_posthoc_unexp <- extract.samples( model_var_unexp_IA )
+  
+  #within condition differences (unexpected vs expected transitions)
+  #coding: 1 and 2 = unexpected transitions (trial_type 1 or 2), 3 and 4 = expected transitions (trial_type 1 or 2)
+  diff_unexp_tt1_cond1 <- post_posthoc_unexp$IA_tt_cond_unexp[,1,1] - post_posthoc_unexp$IA_tt_cond_unexp[,1,3]
+  diff_unexp_tt2_cond1 <- post_posthoc_unexp$IA_tt_cond_unexp[,1,2] - post_posthoc_unexp$IA_tt_cond_unexp[,1,4]
+  
+  diff_unexp_tt1_cond2 <- post_posthoc_unexp$IA_tt_cond_unexp[,2,1] - post_posthoc_unexp$IA_tt_cond_unexp[,2,3]
+  diff_unexp_tt2_cond2 <- post_posthoc_unexp$IA_tt_cond_unexp[,2,2] - post_posthoc_unexp$IA_tt_cond_unexp[,2,4]
+  
+  precis( list( diff_unexp_tt1_cond1=diff_unexp_tt1_cond1, 
+                diff_unexp_tt2_cond1=diff_unexp_tt2_cond1,
+                diff_unexp_tt1_cond2=diff_unexp_tt1_cond2, 
+                diff_unexp_tt2_cond2=diff_unexp_tt2_cond2,
+                diff_unexp_types_cond1 = diff_unexp_tt1_cond1 - diff_unexp_tt2_cond1,
+                diff_unexp_types_cond2 = diff_unexp_tt1_cond2 - diff_unexp_tt2_cond2) )
+  
+  
+  #condition differences (is there a difference across conditions, in expected and unexpected, or specific effect?)
+  #unexpected
+  unexp_cond_diff_tt1 <- post_posthoc_unexp$IA_tt_cond_unexp[,1,1] - post_posthoc_unexp$IA_tt_cond_unexp[,2,1]
+  unexp_cond_diff_tt2 <- post_posthoc_unexp$IA_tt_cond_unexp[,1,2] - post_posthoc_unexp$IA_tt_cond_unexp[,2,2]
+  
+  precis( list( unexp_cond_diff_tt1=unexp_cond_diff_tt1, 
+                unexp_cond_diff_tt2=unexp_cond_diff_tt2,
+                diff_unexp_cond_diff=unexp_cond_diff_tt1 - unexp_cond_diff_tt2))
+  #expected
+  exp_cond_diff_tt1 <- post_posthoc_unexp$IA_tt_cond_unexp[,1,3] - post_posthoc_unexp$IA_tt_cond_unexp[,2,3]
+  exp_cond_diff_tt2 <- post_posthoc_unexp$IA_tt_cond_unexp[,1,4] - post_posthoc_unexp$IA_tt_cond_unexp[,2,4]
+  
+  precis( list( exp_cond_diff_tt1=exp_cond_diff_tt1, 
+                exp_cond_diff_tt2=exp_cond_diff_tt2,
+                diff_exp_cond_diff=exp_cond_diff_tt1 - exp_cond_diff_tt2))
+  
+  diff_unexp_cond_diff
+  diff_exp_cond_diff
+  #expected vs unexpected difference
+  # expectation_cond_diff_tt1 <- diff_unexp_tt1_cond1 - diff_unexp_tt1_cond2
+  # expectation_cond_diff_tt2 <- diff_unexp_tt2_cond1 - diff_unexp_tt2_cond2
+  #yields identical results as the below!
+  expectation_cond_diff_tt1 <- unexp_cond_diff_tt1 - exp_cond_diff_tt1
+  expectation_cond_diff_tt2 <- unexp_cond_diff_tt2 - exp_cond_diff_tt2
+  
+  precis( list( expectation_cond_diff_tt1=expectation_cond_diff_tt1, 
+                expectation_cond_diff_tt2=expectation_cond_diff_tt2,
+                expectation_diff_cond_diff=expectation_cond_diff_tt1 - expectation_cond_diff_tt2))
+  
+
+  
+  
+  # plot interaction effects
+
+  labels <- c('4-1 state transitions', 'All other 4-state cycle transitions', '6-1 state transitions', 'All other 6-state cycle transitions', 'Difference', 'Difference' )
+
+  colors <- c(rgb(0, 186, 85, maxColorValue = 255),
+              rgb(0, 186, 85, maxColorValue = 255),
+              "black",
+              "black",
+              rgb(80, 120, 90, maxColorValue = 255),
+              rgb(80, 120, 90, maxColorValue = 255))
+
+
+  # Plot the density of posterior samples for the parameters of interest
+  # convert posterior samples to a data frame
+  df_posterior_unexp <- data.frame(unexp_cond_diff_tt1 = unexp_cond_diff_tt1,
+                                   exp_cond_diff_tt1 = exp_cond_diff_tt1,
+                                   unexp_cond_diff_tt2 = unexp_cond_diff_tt2,
+                                   exp_cond_diff_tt2 = exp_cond_diff_tt2,
+                                   diff_unexp_cond_diff = unexp_cond_diff_tt1 - unexp_cond_diff_tt2,
+                                   diff_exp_cond_diff = exp_cond_diff_tt1 - exp_cond_diff_tt2)
+
+  # # Reshape data for ggplot2
+  df_posterior_unexp_melt <- reshape2::melt(df_posterior_unexp)
+
+  # Add a new column with the desired labels
+  df_posterior_unexp_melt$labels <- rep(labels, each=nrow(df_posterior_unexp_melt)/6)
+
+
+  p_unexp <- ggplot(df_posterior_unexp_melt, aes(x=value, fill=variable)) +
+    geom_density(alpha=0.4, stat = "density") +
+    facet_wrap(~ variable, scales="free_y", nrow = 3, labeller = labeller(variable = setNames(labels, unique(df_posterior_unexp_melt$variable)))) +
+    scale_fill_manual(values = colors) +
+    labs(x = "Parameter Estimates", y = "Posterior Density") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "bottom",
+          axis.text = element_text(size = 22),
+          axis.title = element_text(size = 24),
+          plot.title = element_text(size = 24, face = "bold"),
+          strip.text = element_text(size = 21),
+          plot.caption = element_text(size = 20, hjust = 0)) +
+    guides(fill="none") +
+    scale_x_continuous(limits = c(-1.5, 1.5), breaks = seq(-1.5, 1.5, by = 0.5)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_vline(data = df_posterior_unexp_melt %>% group_by(variable) %>% summarise(mean_val = mean(value)),
+               aes(xintercept = mean_val, linetype = "solid"), show.legend = FALSE)
+
+  show(p_unexp)
+
+
+
+  ggsave("/Users/lennart/Desktop/Data_Transfer_HHU_Mac/PostDoc/Projects/Markov/task/plots/unexpected_expected_transitions_diff_aggregates_densities.png", p_unexp, dpi = 600, width = 14, height = 12, units = "in")
+
+}
+
+```
+
