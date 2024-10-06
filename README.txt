@@ -1,9 +1,13 @@
-# Decomposing dynamical subprocesses for compositional generalization
+# Code and data for: Decomposing dynamical subprocesses for compositional generalization
+Lennart Luettgau, Tore Erdmann, Sebastijan Veselic, Kimberly L. Stachenfeld, Zeb Kurth-Nelson, Rani Moran, and Raymond J. Dolan
+Proceedings of the National Academy of Sciences
+
 
 This is the code supplement for the statistical models/GLMs implemented in
 R, simulations and fitting of successor feature models implemented in MATLAB
 
 Raw data are provided in /data/all_data.csv.zip (compressed file needs to be unpacked first)
+
 ## Instructions
 
 To run the code, you'll need to install RStudio (specific libraries: rethinking - uses RStan) and MATLAB (version 2023b).
